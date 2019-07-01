@@ -734,7 +734,8 @@ class FileStoreController {
     if (isNotBlank(query)) {
       Arrays.stream(query.split("&"))
           .map(this::splitQueryParameter)
-          .forEach((h) -> addOverrideHeader(response, h.getKey(), h.getValue()));
+          .forEach((h) -> response.setHeader(h.getKey(), h.getValue()));
+      //addOverrideHeader(response, h.getKey(), h.getValue()));
     }
   }
 
