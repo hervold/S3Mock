@@ -75,6 +75,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -83,6 +84,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import javax.servlet.ServletInputStream;
 import javax.servlet.http.HttpServletRequest;
@@ -458,14 +461,19 @@ class FileStoreController {
 
   private List<BucketContents> getBucketContents(final String bucketName,
       final String prefix) throws IOException {
+
+    LOG.error(">> getBucketContents - bucketName={}, prefix={}", bucketName, prefix);
     String encodedPrefix = null != prefix ? objectNameToFileName(prefix) : null;
 
     final List<S3Object> s3Objects = fileStore.getS3Objects(bucketName, encodedPrefix);
 
+    // KIERAN
+
     LOG.debug(String.format("Found %s objects in bucket %s", s3Objects.size(), bucketName));
     return s3Objects.stream().map(s3Object -> new BucketContents(
         fileNameToObjectName(s3Object.getName()),
-        s3Object.getModificationDate(), s3Object.getMd5(),
+        s3Object.getModificationDate(), 
+        filenameToMap(s3Object.getName()).getOrDefault("ETag", s3Object.getMd5()),
         s3Object.getSize(), "STANDARD", TEST_OWNER))
         // List Objects results are expected to be sorted by key
         .sorted(BUCKET_CONTENTS_COMPARATOR)
@@ -490,6 +498,7 @@ class FileStoreController {
     final String filename = filenameFrom(bucketName, request);
     try (final ServletInputStream inputStream = request.getInputStream()) {
       final Map<String, String> userMetadata = getUserMetadata(request);
+      LOG.error("PUT userMetadata: {}", userMetadata);
       final S3Object s3Object = fileStore.putS3Object(bucketName,
           filename,
           request.getContentType(),
@@ -710,6 +719,8 @@ class FileStoreController {
 
     verifyObjectMatching(match, noMatch, s3Object.getMd5());
 
+    LOG.error("metadata for {}: {}", filename, s3Object.getUserMetadata());
+
     if (range != null) {
       getObjectWithRange(response, range, s3Object);
     } else {
@@ -721,7 +732,7 @@ class FileStoreController {
       response.setHeader(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, ANY);
       response.setDateHeader(HttpHeaders.LAST_MODIFIED, s3Object.getLastModified());
       addUserMetadata(response::addHeader, s3Object);
-      addOverrideHeaders(response, request.getQueryString());
+      addOverrideHeaders(response, filename, request.getQueryString());
 
       try (final OutputStream outputStream = response.getOutputStream()) {
         Files.copy(s3Object.getDataFile().toPath(), outputStream);
@@ -730,7 +741,27 @@ class FileStoreController {
 
   }
 
-  private void addOverrideHeaders(final HttpServletResponse response, final String query) {
+  private Map<String, String> filenameToMap(final String filename) {
+    String decodedFname = "";
+    try {
+      decodedFname = URLDecoder.decode(filename,"UTF-8");
+    } catch (Exception e) {
+      LOG.error("weird");
+    }
+    Map<String, String> map = new HashMap<>();
+    Matcher m = Pattern.compile("___([a-zA-Z0-9]+)_([a-zA-Z0-9]+)___")
+                   .matcher(decodedFname);
+    while (m.find()) {
+      map.put(m.group(1), m.group(2));
+    }
+    return map;
+  }
+
+  private void addOverrideHeaders(final HttpServletResponse response, final String filename,
+                                  final String query) {
+    for (Map.Entry<String,String> e: filenameToMap(filename).entrySet()) {
+      response.setHeader(e.getKey(), e.getValue());
+    }
     if (isNotBlank(query)) {
       Arrays.stream(query.split("&"))
           .map(this::splitQueryParameter)
